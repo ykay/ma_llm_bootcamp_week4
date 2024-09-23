@@ -16,13 +16,7 @@ gen_kwargs = {
     "max_tokens": 500
 }
 
-@traceable
-@cl.on_message
-async def on_message(message: cl.Message):
-    message_history = cl.user_session.get("message_history", [])
-
-    message_history.append({"role": "user", "content": message.content})
-    
+async def generate_response(client, message_history, gen_kwargs):
     response_message = cl.Message(content="")
     await response_message.send()
 
@@ -30,6 +24,16 @@ async def on_message(message: cl.Message):
     async for part in stream:
         if token := part.choices[0].delta.content or "":
             await response_message.stream_token(token)
+    
+    return response_message
+
+@traceable
+@cl.on_message
+async def on_message(message: cl.Message):
+    message_history = cl.user_session.get("message_history", [])
+    message_history.append({"role": "user", "content": message.content})
+    
+    response_message = await generate_response(client, message_history, gen_kwargs)
 
     message_history.append({"role": "assistant", "content": response_message.content})
     cl.user_session.set("message_history", message_history)
