@@ -1,14 +1,17 @@
 from dotenv import load_dotenv
 import chainlit as cl
-import openai
 
-# Load environment variables
 load_dotenv()
 
-from langsmith.wrappers import wrap_openai
-from langsmith import traceable
+# Note: If switching to LangSmith, uncomment the following, and replace @observe with @traceable
+# from langsmith.wrappers import wrap_openai
+# from langsmith import traceable
+# client = wrap_openai(openai.AsyncClient())
 
-client = wrap_openai(openai.AsyncClient())
+from langfuse.decorators import observe
+from langfuse.openai import AsyncOpenAI
+ 
+client = AsyncOpenAI()
 
 gen_kwargs = {
     "model": "gpt-4o",
@@ -20,12 +23,13 @@ SYSTEM_PROMPT = """\
 You are a pirate.
 """
 
-@traceable
+@observe
 @cl.on_chat_start
 def on_chat_start():    
     message_history = [{"role": "system", "content": SYSTEM_PROMPT}]
     cl.user_session.set("message_history", message_history)
 
+@observe
 async def generate_response(client, message_history, gen_kwargs):
     response_message = cl.Message(content="")
     await response_message.send()
@@ -37,8 +41,8 @@ async def generate_response(client, message_history, gen_kwargs):
     
     return response_message
 
-@traceable
 @cl.on_message
+@observe
 async def on_message(message: cl.Message):
     message_history = cl.user_session.get("message_history", [])
     message_history.append({"role": "user", "content": message.content})
