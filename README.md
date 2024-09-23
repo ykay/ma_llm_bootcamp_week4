@@ -12,7 +12,9 @@ This project is a starter Chainlit application that demonstrates a simple integr
 
 5. **LangSmith Integration**: The app includes LangSmith for tracing and monitoring AI interactions, which can be useful for debugging and optimizing your AI application.
 
-## Installation
+As a convenience, on start of a new chat session, a system prompt is added as the first message in the chat history.
+
+## Getting Started
 
 ### 1. Create a virtual environment
 
@@ -44,6 +46,14 @@ pip install -r requirements.txt
 
 - Copy the `.env.sample` file to a new file named `.env`
 - Fill in the `.env` file with your API keys
+
+## Running the app
+
+To run the app, use the following command:
+
+```bash
+chainlit run app.py -w
+``` 
 
 ## Updating dependencies
 
