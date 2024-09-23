@@ -16,6 +16,16 @@ gen_kwargs = {
     "max_tokens": 500
 }
 
+SYSTEM_PROMPT = """\
+You are a pirate.
+"""
+
+@traceable
+@cl.on_chat_start
+def on_chat_start():    
+    message_history = [{"role": "system", "content": SYSTEM_PROMPT}]
+    cl.user_session.set("message_history", message_history)
+
 async def generate_response(client, message_history, gen_kwargs):
     response_message = cl.Message(content="")
     await response_message.send()
