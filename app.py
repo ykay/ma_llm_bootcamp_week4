@@ -1,90 +1,158 @@
 from dotenv import load_dotenv
 import chainlit as cl
+import prompts
+import json
+import os
 
 load_dotenv()
 
 from langfuse.decorators import observe
 from langfuse.openai import AsyncOpenAI
- 
+
 client = AsyncOpenAI()
 
-gen_kwargs = {
-    "model": "gpt-4o",
-    "temperature": 0.2
-}
+gen_kwargs = {"model": "gpt-4o", "temperature": 0.2}
 
-PLANNING_PROMPT = """\
-You are a software architect, preparing to build the web page in the image that the user sends. 
-Once they send an image, generate a plan, described below, in markdown format.
-
-If the user or reviewer confirms the plan is good, use the available tools to save it as an artifact \
-called `plan.md`. If the user has feedback on the plan, revise the plan, and save it using \
-the tool again. A tool is available to update the artifact. Your role is only to plan the \
-project. You will not implement the plan, and will not write any code.
-
-If the plan has already been saved, no need to save it again unless there is feedback. Do not \
-use the tool again if there are no changes.
-
-For the contents of the markdown-formatted plan, create two sections, "Overview" and "Milestones".
-
-In a section labeled "Overview", analyze the image, and describe the elements on the page, \
-their positions, and the layout of the major sections.
-
-Using vanilla HTML and CSS, discuss anything about the layout that might have different \
-options for implementation. Review pros/cons, and recommend a course of action.
-
-In a section labeled "Milestones", describe an ordered set of milestones for methodically \
-building the web page, so that errors can be detected and corrected early. Pay close attention \
-to the aligment of elements, and describe clear expectations in each milestone. Do not include \
-testing milestones, just implementation.
-
-Milestones should be formatted like this:
-
- - [ ] 1. This is the first milestone
- - [ ] 2. This is the second milestone
- - [ ] 3. This is the third milestone
-"""
+tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": "callAgent",
+            "description": "Call another agent to perform a task.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "agentName": {
+                        "type": "string",
+                        "description": """
+                        The name of the agent to call. Available agents: 
+                        - planning: Generates a plan for building a web page from an image. Call this function when the user confirms the plan is good.
+                        - implementation: Implements a specific milestone in the plan.",
+                        """,
+                    }
+                },
+                "required": ["agentName"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "noAction",
+            "description": "No action is needed.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    },
+]
 
 import agents.base_agent as base_agent
+from agents.implementation_agent import ImplementationAgent
 import utils
 
 # Create an instance of the Agent class
-planning_agent = base_agent.Agent(name="Planning Agent", client=client, prompt=PLANNING_PROMPT)
+planning_agent = base_agent.Agent(
+    name="Planning Agent", client=client, prompt=prompts.PLANNING_PROMPT
+)
+implementation_agent = ImplementationAgent(
+    name="Implementation Agent", client=client, prompt=prompts.IMPLEMENTATION_PROMPT
+)
+
+def initialize():
+    artifacts_dir = "artifacts"
+    filename = "plan.md"
+    print("DEBUG: Initializing...")
+    # Delete existing plan for simplifications (ability to resume previous plan complicates the implementation)
+    if os.path.exists(artifacts_dir) and os.path.isdir(artifacts_dir):
+        for filename in os.listdir(artifacts_dir):
+            file_path = os.path.join(artifacts_dir, filename)
+            if os.path.isfile(file_path) and filename == "plan.md":
+                os.remove(file_path)
+
+initialize()
+
 
 @observe
 @cl.on_chat_start
-def on_chat_start():    
-    message_history = [{"role": "system", "content": "This placeholder system message will be replaced by base_agent."}]
+def on_chat_start():
+    message_history = [{"role": "system", "content": prompts.SYSTEM_PROMPT}]
     cl.user_session.set("message_history", message_history)
+
 
 @observe
 async def generate_response(client, message_history, gen_kwargs):
     response_message = cl.Message(content="")
     await response_message.send()
 
-    stream = await client.chat.completions.create(messages=message_history, stream=True, **gen_kwargs)
+    stream = await client.chat.completions.create(
+        messages=message_history, stream=True, **gen_kwargs
+    )
     async for part in stream:
         if token := part.choices[0].delta.content or "":
             await response_message.stream_token(token)
-    
+
     await response_message.update()
 
     return response_message
+
 
 @cl.on_message
 @observe
 async def on_message(message: cl.Message):
     message_history = cl.user_session.get("message_history", [])
 
-    if imageMessage := utils.image_message(message):
-        message_history.append(imageMessage)
-    else:
-        message_history.append({"role": "user", "content": message.content})
-    
-    response_message = await planning_agent.execute(message_history)
+    response_message = cl.Message(content="")
+    await response_message.send()
 
-    message_history.append({"role": "assistant", "content": response_message.content})
+    utils.append_chainlit_message_to_history(message, message_history, "user")
+
+    stream = await client.chat.completions.create(
+        messages=message_history,
+        stream=True,
+        tools=tools,
+        tool_choice="required",
+        **gen_kwargs,
+    )
+
+    # Prompt if any agent needs to be called
+    function_array, argument_array = await utils.stream_chainlit_response_and_get_function_calls(stream, response_message)
+    utils.append_chainlit_message_to_history(response_message, message_history, "assistant") # Only if there was a response message
+
+    print("DEBUG: functions: ", function_array)
+    for index, function_name in enumerate(function_array):
+        if function_name:
+            arguments = argument_array[index]
+
+            print("DEBUG: function_name: ", function_name)
+            print("DEBUG: arguments: ", arguments)
+            
+            if function_name == "callAgent":
+                arguments_dict = json.loads(arguments)
+                agent_name = arguments_dict.get("agentName")
+
+                if agent_name:
+                    response_message.content = f"Calling agent: {agent_name}...\n"
+                    await response_message.update()
+
+                    if agent_name == "planning":
+                        await planning_agent.execute(message_history, response_message)
+                    elif agent_name == "implementation":
+                        await implementation_agent.execute(
+                            message_history, response_message
+                        )
+
+                    utils.append_chainlit_message_to_history(response_message, message_history, "assistant")
+                else:
+                    print("DEBUG: No agent specified")
+                    
+
     cl.user_session.set("message_history", message_history)
+
 
 if __name__ == "__main__":
     cl.main()

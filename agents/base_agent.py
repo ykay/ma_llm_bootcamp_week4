@@ -1,5 +1,9 @@
 import os
 import chainlit as cl
+import json
+import utils
+
+from langfuse.decorators import observe
 
 class Agent:
     """
@@ -40,7 +44,7 @@ class Agent:
             "temperature": 0.2
         }
 
-    async def execute(self, message_history):
+    async def execute(self, message_history, response_message=None):
         """
         Executes the agent's main functionality.
 
@@ -56,62 +60,39 @@ class Agent:
             # Insert the agent's prompt at the beginning
             copied_message_history.insert(0, {"role": "system", "content": self._build_system_prompt()})
 
-        response_message = cl.Message(content="")
-        await response_message.send()
-
         stream = await self.client.chat.completions.create(messages=copied_message_history, stream=True, tools=self.tools, tool_choice="auto", **self.gen_kwargs)
+        function_array, argument_array = await utils.stream_chainlit_response_and_get_function_calls(stream, response_message)
+        
+        planning_action_taken_context = ""
+        for index, function_name in enumerate(function_array):
+            if function_name:
+                arguments = argument_array[index]
+                
+                print("DEBUG: function_name: ", function_name)
+                print("DEBUG: arguments: ", arguments)
+                
+                if function_name == "updateArtifact":                
+                    response_message.content += "Updating the artifact...\n"
+                    await response_message.update()
 
-        function_name = ""
-        arguments = ""
-        async for part in stream:
-            if part.choices[0].delta.tool_calls:
-                tool_call = part.choices[0].delta.tool_calls[0]
-                function_name_delta = tool_call.function.name or ""
-                arguments_delta = tool_call.function.arguments or ""
-                
-                function_name += function_name_delta
-                arguments += arguments_delta
-        
-            if token := part.choices[0].delta.content or "":
-                await response_message.stream_token(token)        
-        
-        if function_name:
-            print("DEBUG: function_name:")
-            print("type:", type(function_name))
-            print("value:", function_name)
-            print("DEBUG: arguments:")
-            print("type:", type(arguments))
-            print("value:", arguments)
-            
-            if function_name == "updateArtifact":
-                import json
-                
-                arguments_dict = json.loads(arguments)
-                filename = arguments_dict.get("filename")
-                contents = arguments_dict.get("contents")
-                
-                if filename and contents:
-                    os.makedirs("artifacts", exist_ok=True)
-                    with open(os.path.join("artifacts", filename), "w") as file:
-                        file.write(contents)
+                    arguments_dict = json.loads(arguments)
+                    filename = arguments_dict.get("filename")
+                    contents = arguments_dict.get("contents")
                     
-                    # Add a message to the message history
-                    message_history.append({
-                        "role": "system",
-                        "content": f"The artifact '{filename}' was updated. Let the user know."
-                    })
+                    if filename and contents:
+                        os.makedirs("artifacts", exist_ok=True)
+                        with open(os.path.join("artifacts", filename), "w") as file:
+                            file.write(contents)
+                        
+                        planning_action_taken_context = f"The artifact '{filename}' was updated."
 
-                    stream = await self.client.chat.completions.create(messages=message_history, stream=True, **self.gen_kwargs)
-                    async for part in stream:
-                        if token := part.choices[0].delta.content or "":
-                            await response_message.stream_token(token)  
 
-        else:
-            print("No tool call")
 
-        await response_message.update()
+        if planning_action_taken_context: # Notify user the result of the planning action
+            message_history.append({"role": "system", "content": planning_action_taken_context})
+            stream = await self.client.chat.completions.create(messages=message_history, stream=True, **self.gen_kwargs)
+            await utils.stream_chainlit_response_and_get_function_calls(stream, response_message)
 
-        return response_message
 
     def _build_system_prompt(self):
         """
