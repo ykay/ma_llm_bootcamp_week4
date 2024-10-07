@@ -1,4 +1,12 @@
-# Chainlit Starter App
+# Week 4 Lab Notes
+
+One of the first issues I encountered with Milestone 4 was that I encountered a circular dependency while instructing the planning agent (base class) to delegate to the Implementation Agent. To resolve this, I implemented function calling in the main app to decide whether to call the planning or implementation agent, so there is no dependency between the agents.
+
+The implementation seems to work more often than not for step 1, but as the steps progress, the LLM starts to bypass the agent delegation and respond as if it completed a milestone, or it will properly call the agent, but no changes will occur in the html, css, etc. (i.e., they remain the same from the previous step). I'm suspecting that the accumulation of messages in the conversation might be confusing the LLM or making the LLM "lazy" (just pretending like it implemented a milestone). 
+
+Whatever the case, taking a closer look at how the three differen conversation histories (main, planning, implementation) grow and seeing where it starts to fall apart may help understand what is causing the agent(s) / LLM to destabilize.
+
+# Chainlit Instructions
 
 This project is a starter Chainlit application that demonstrates a simple integration with OpenAI's API. It showcases the following key features:
 
